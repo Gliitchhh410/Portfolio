@@ -333,7 +333,7 @@ export default function DesktopPortfolio() {
     else if (normalized === "history") setBlocks((current) => [...current, { id: nextId.current++, kind: "command", title: cwd, lines: [command] }, { id: nextId.current++, kind: "response", title: "COMMAND_HISTORY", lines: [...history, command].map((item, index) => `${String(index + 1).padStart(3)}  ${item}`) }]);
     else if (normalized === "exit" || normalized === "logout") {
       setBlocks((current) => [...current, { id: nextId.current++, kind: "command", title: cwd, lines: [command] }, { id: nextId.current++, kind: "response", title: "SESSION", lines: ["Terminal minimized. Use the dock to restore the session."] }]);
-      window.setTimeout(() => setMinimized((current) => ({ ...current, terminal: true })), 300);
+      if (window.innerWidth > 680) window.setTimeout(() => setMinimized((current) => ({ ...current, terminal: true })), 300);
     } else if (normalized === "cd" || normalized.startsWith("cd ")) {
       const target = normalized.slice(2).trim();
       const destination = !target || target === "~" || target === "/home/ahmed/portfolio" || target === ".." ? "~" : ["projects", "./projects", "~/projects"].includes(target) ? "~/projects" : null;
