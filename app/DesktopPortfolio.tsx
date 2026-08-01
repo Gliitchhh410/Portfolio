@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 
 type WindowName = "about" | "terminal" | "tasks" | "monitor";
 type Position = { x: number; y: number };
+type WindowSize = { width: number; height: number };
 type LinkItem = { label: string; href: string; download?: boolean };
 type Block = { id: number; kind: "command" | "response" | "error" | "system"; title?: string; lines: string[]; links?: LinkItem[] };
 type Project = { slug: string; title: string; status: string; summary: string; stack: string[]; highlights: string[]; links?: LinkItem[] };
@@ -69,6 +70,18 @@ const DEFAULT_POSITIONS: Record<WindowName, Position> = {
   terminal: { x: 390, y: 74 },
   tasks: { x: 720, y: 32 },
   monitor: { x: 735, y: 350 },
+};
+const DEFAULT_SIZES: Record<WindowName, WindowSize> = {
+  about: { width: 360, height: 430 },
+  terminal: { width: 620, height: 500 },
+  tasks: { width: 520, height: 330 },
+  monitor: { width: 520, height: 300 },
+};
+const MIN_SIZES: Record<WindowName, WindowSize> = {
+  about: { width: 290, height: 330 },
+  terminal: { width: 430, height: 320 },
+  tasks: { width: 380, height: 260 },
+  monitor: { width: 390, height: 270 },
 };
 
 function makeResponse(raw: string, id: number): Block {
@@ -202,11 +215,11 @@ function Clock() {
   return <span>{value}</span>;
 }
 
-function WindowFrame({ name, title, position, zIndex, minimized, maximized, onFocus, onDrag, onClose, onMinimize, onMaximize, className = "", children }: {
-  name: WindowName; title: string; position: Position; zIndex: number; minimized: boolean; maximized: boolean;
-  onFocus: () => void; onDrag: (event: ReactPointerEvent<HTMLDivElement>) => void; onClose: () => void; onMinimize: () => void; onMaximize: () => void; className?: string; children: ReactNode;
+function WindowFrame({ name, title, position, size, zIndex, minimized, maximized, onFocus, onDrag, onResize, onClose, onMinimize, onMaximize, className = "", children }: {
+  name: WindowName; title: string; position: Position; size: WindowSize; zIndex: number; minimized: boolean; maximized: boolean;
+  onFocus: () => void; onDrag: (event: ReactPointerEvent<HTMLDivElement>) => void; onResize: (event: ReactPointerEvent<HTMLDivElement>) => void; onClose: () => void; onMinimize: () => void; onMaximize: () => void; className?: string; children: ReactNode;
 }) {
-  const style: CSSProperties = maximized ? { zIndex, left: 18, top: 18, transform: "none" } : { zIndex, left: 0, top: 0, transform: `translate3d(${position.x}px, ${position.y}px, 0)` };
+  const style: CSSProperties = maximized ? { zIndex, left: 18, top: 18, transform: "none" } : { zIndex, left: 0, top: 0, width: size.width, height: size.height, transform: `translate3d(${position.x}px, ${position.y}px, 0)` };
   return (
     <section className={`desktop-window ${name}-window ${minimized ? "minimized" : ""} ${maximized ? "maximized" : ""} ${className}`} style={style} onPointerDown={onFocus} aria-label={`${title} window`}>
       <div className="window-bar" onPointerDown={onDrag} onDoubleClick={onMaximize}>
@@ -219,6 +232,7 @@ function WindowFrame({ name, title, position, zIndex, minimized, maximized, onFo
         <b>{name === "terminal" ? "zsh" : `PID-${name.length}410`}</b>
       </div>
       {!minimized && <div className="window-body">{children}</div>}
+      {!minimized && !maximized && <div className="resize-handle" onPointerDown={onResize} role="separator" aria-label={`Resize ${title}`} aria-orientation="horizontal" />}
     </section>
   );
 }
@@ -227,6 +241,7 @@ export default function DesktopPortfolio() {
   const [booting, setBooting] = useState(true);
   const [bootLeaving, setBootLeaving] = useState(false);
   const [positions, setPositions] = useState(DEFAULT_POSITIONS);
+  const [sizes, setSizes] = useState(DEFAULT_SIZES);
   const [open, setOpen] = useState<Record<WindowName, boolean>>({ about: true, terminal: true, tasks: true, monitor: true });
   const [minimized, setMinimized] = useState<Record<WindowName, boolean>>({ about: false, terminal: false, tasks: false, monitor: false });
   const [maximized, setMaximized] = useState<Record<WindowName, boolean>>({ about: false, terminal: false, tasks: false, monitor: false });
@@ -236,7 +251,9 @@ export default function DesktopPortfolio() {
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [cwd, setCwd] = useState("~");
   const [blocks, setBlocks] = useState<Block[]>([{ id: 1, kind: "system", title: "AHMED-OS v2.0", lines: ["Kernel online. Portfolio filesystem mounted.", "Type `help` to inspect all records."] }]);
-  const dragRef = useRef<{ name: WindowName; startX: number; startY: number; origin: Position } | null>(null);
+  const dragRef = useRef<{ name: WindowName; startX: number; startY: number; origin: Position; size: WindowSize } | null>(null);
+  const resizeRef = useRef<{ name: WindowName; startX: number; startY: number; origin: WindowSize; position: Position } | null>(null);
+  const stageRef = useRef<HTMLElement>(null);
   const nextId = useRef(2);
   const outputRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -252,13 +269,28 @@ export default function DesktopPortfolio() {
   useEffect(() => {
     const move = (event: PointerEvent) => {
       const drag = dragRef.current;
-      if (!drag) return;
-      const windowSize: Record<WindowName, { width: number; height: number }> = { about: { width: 360, height: 430 }, terminal: { width: 620, height: 500 }, tasks: { width: 520, height: 330 }, monitor: { width: 520, height: 300 } };
-      const nextX = drag.origin.x + event.clientX - drag.startX;
-      const nextY = drag.origin.y + event.clientY - drag.startY;
-      setPositions((current) => ({ ...current, [drag.name]: { x: Math.min(Math.max(0, nextX), 1280 - windowSize[drag.name].width), y: Math.min(Math.max(0, nextY), 680 - windowSize[drag.name].height) } }));
+      const resize = resizeRef.current;
+      const stage = stageRef.current;
+      if (!stage || (!drag && !resize)) return;
+      const rect = stage.getBoundingClientRect();
+      const scale = rect.width / stage.offsetWidth || 1;
+      if (drag) {
+        const nextX = drag.origin.x + (event.clientX - drag.startX) / scale;
+        const nextY = drag.origin.y + (event.clientY - drag.startY) / scale;
+        const minX = -rect.left / scale;
+        const maxX = (window.innerWidth - rect.left) / scale - drag.size.width;
+        const maxY = (window.innerHeight - rect.top) / scale - drag.size.height - 28;
+        setPositions((current) => ({ ...current, [drag.name]: { x: Math.min(Math.max(minX, nextX), Math.max(minX, maxX)), y: Math.min(Math.max(0, nextY), Math.max(0, maxY)) } }));
+      }
+      if (resize) {
+        const availableWidth = (window.innerWidth - rect.left) / scale - resize.position.x;
+        const availableHeight = (window.innerHeight - rect.top) / scale - resize.position.y - 28;
+        const width = Math.min(Math.max(MIN_SIZES[resize.name].width, resize.origin.width + (event.clientX - resize.startX) / scale), Math.max(MIN_SIZES[resize.name].width, availableWidth));
+        const height = Math.min(Math.max(MIN_SIZES[resize.name].height, resize.origin.height + (event.clientY - resize.startY) / scale), Math.max(MIN_SIZES[resize.name].height, availableHeight));
+        setSizes((current) => ({ ...current, [resize.name]: { width, height } }));
+      }
     };
-    const up = () => { dragRef.current = null; };
+    const up = () => { dragRef.current = null; resizeRef.current = null; };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
     return () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
@@ -271,7 +303,13 @@ export default function DesktopPortfolio() {
   const startDrag = (name: WindowName, event: ReactPointerEvent<HTMLDivElement>) => {
     if (maximized[name] || (event.target as HTMLElement).closest("button")) return;
     focusWindow(name);
-    dragRef.current = { name, startX: event.clientX, startY: event.clientY, origin: positions[name] };
+    dragRef.current = { name, startX: event.clientX, startY: event.clientY, origin: positions[name], size: sizes[name] };
+  };
+  const startResize = (name: WindowName, event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    focusWindow(name);
+    resizeRef.current = { name, startX: event.clientX, startY: event.clientY, origin: sizes[name], position: positions[name] };
   };
   const toggleWindow = (name: WindowName) => {
     setOpen((current) => ({ ...current, [name]: true }));
@@ -280,8 +318,9 @@ export default function DesktopPortfolio() {
     if (name === "terminal") window.setTimeout(() => inputRef.current?.focus(), 0);
   };
   const frameProps = (name: WindowName) => ({
-    name, position: positions[name], zIndex: zOrder[name], minimized: minimized[name], maximized: maximized[name],
+    name, position: positions[name], size: sizes[name], zIndex: zOrder[name], minimized: minimized[name], maximized: maximized[name],
     onFocus: () => focusWindow(name), onDrag: (event: ReactPointerEvent<HTMLDivElement>) => startDrag(name, event),
+    onResize: (event: ReactPointerEvent<HTMLDivElement>) => startResize(name, event),
     onClose: () => setOpen((current) => ({ ...current, [name]: false })),
     onMinimize: () => setMinimized((current) => ({ ...current, [name]: !current[name] })),
     onMaximize: () => setMaximized((current) => ({ ...current, [name]: !current[name] })),
@@ -349,7 +388,7 @@ export default function DesktopPortfolio() {
         <a href="https://www.linkedin.com/in/ahmed-mounir-ali410" target="_blank" rel="noreferrer" aria-label="LinkedIn">IN</a>
       </nav>
 
-      <section className="desktop-stage" aria-label="Interactive cyber desktop">
+      <section className="desktop-stage" ref={stageRef} aria-label="Interactive cyber desktop">
         <div className="hero-identity" aria-hidden="true"><span>AHMED</span><strong>MOUNIR</strong><p>BACKEND ENGINEER · DISTRIBUTED SYSTEMS · CLOUD · APPLIED AI</p></div>
 
         {open.about && <WindowFrame {...frameProps("about")} title="about_ahmed.txt">
